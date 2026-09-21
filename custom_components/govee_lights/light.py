@@ -33,10 +33,21 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, config_entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
     hub: GoveeCoordinator = config_entry.runtime_data
-    async_add_entities([GoveeLight(hub, config_entry)])
+
+    entities = [GoveeLight(hub, config_entry)]
+
+    if config_entry.data.get("model") == "H617E":
+        entities.extend(
+            GoveeSegmentLight(hub, config_entry, segment)
+            for segment in range(15)
+        )
+
+    async_add_entities(entities)
 
 
 class GoveeLight(LightEntity, RestoreEntity):
@@ -178,3 +189,107 @@ class GoveeLight(LightEntity, RestoreEntity):
         self._attr_effect = EFFECT_OFF
         self.async_write_ha_state()
 
+class GoveeSegmentLight(LightEntity, RestoreEntity):
+    """Virtual light entity for one H617E RGBIC segment."""
+
+    _attr_has_entity_name = True
+    _attr_should_poll = False
+    _attr_supported_color_modes = {ColorMode.RGB}
+    _attr_color_mode = ColorMode.RGB
+
+    def __init__(
+        self,
+        hub: GoveeCoordinator,
+        config_entry: ConfigEntry,
+        segment_index: int,
+    ) -> None:
+        self._coordinator = hub
+        self._segment_index = segment_index
+
+        self._attr_unique_id = (
+            f"{hub.unique_device_id}_segment_{segment_index + 1}"
+        )
+        self._attr_name = f"Segment {segment_index + 1}"
+
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, hub.unique_device_id)}
+        )
+
+        self._attr_is_on = True
+        self._attr_brightness = 255
+        self._attr_rgb_color = (255, 255, 255)
+        self._attr_available = hub.available
+
+    async def async_added_to_hass(self) -> None:
+        last_state = await self.async_get_last_state()
+
+        if last_state is not None:
+            self._attr_is_on = last_state.state == "on"
+
+            if last_state.attributes.get(ATTR_BRIGHTNESS) is not None:
+                self._attr_brightness = last_state.attributes[ATTR_BRIGHTNESS]
+
+            if last_state.attributes.get(ATTR_RGB_COLOR) is not None:
+                self._attr_rgb_color = tuple(
+                    last_state.attributes[ATTR_RGB_COLOR]
+                )
+
+        self.async_on_remove(
+            self._coordinator.async_add_listener(
+                self._handle_coordinator_update
+            )
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._attr_available = self._coordinator.available
+        self.async_write_ha_state()
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        if ATTR_RGB_COLOR in kwargs:
+            self._attr_rgb_color = tuple(kwargs[ATTR_RGB_COLOR])
+
+        if ATTR_BRIGHTNESS in kwargs:
+            self._attr_brightness = kwargs[ATTR_BRIGHTNESS]
+
+        rgb = (
+            (255, 255, 255)
+            if self._attr_rgb_color is None
+            else self._attr_rgb_color
+        )
+
+        brightness = (
+            255
+            if self._attr_brightness is None
+            else self._attr_brightness
+        )
+
+        factor = brightness / 255
+
+        r = round(rgb[0] * factor)
+        g = round(rgb[1] * factor)
+        b = round(rgb[2] * factor)
+
+        if not self._coordinator.is_on:
+            await self._coordinator.async_turn_on()
+
+        await self._coordinator.async_set_segment_rgb_color(
+            self._segment_index,
+            r,
+            g,
+            b,
+        )
+
+        self._attr_is_on = True
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self._coordinator.async_set_segment_rgb_color(
+            self._segment_index,
+            0,
+            0,
+            0,
+        )
+
+        self._attr_is_on = False
+        self.async_write_ha_state()
