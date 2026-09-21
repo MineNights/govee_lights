@@ -574,6 +574,35 @@ class GoveeBLECoordinator(GoveeCoordinator):
             )
         await self.send_command(packet)
 
+    async def async_set_segment_rgb_color(
+        self,
+        segment_index: int,
+        r: int,
+        g: int,
+        b: int,
+    ) -> None:
+        """Set the RGB colour of a single H617E segment."""
+
+        if self.model != "H617E":
+            raise ValueError("Segment control currently only supports H617E")
+
+        if not 0 <= segment_index <= 14:
+            raise ValueError("segment_index must be between 0 and 14")
+
+        mask = 1 << segment_index
+        mask_low = mask & 0xFF
+        mask_high = (mask >> 8) & 0xFF
+
+        packet = GoveeBLE.build_single_packet(
+            GoveeBLE.LEDCommand.COLOR,
+            [
+                GoveeBLE.LEDMode.SEGMENTS, 0x01,  r, g, b,
+                0x00, 0x00, 0x00, 0x00, 0x00, mask_low, mask_high,
+            ],
+        )
+
+        await self.send_command(packet)
+  
     async def async_set_color_temp(self, kelvin: int) -> None:
         """Send a native colour-temperature packet (white-balance mode).
 
